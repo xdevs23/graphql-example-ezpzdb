@@ -1,0 +1,12 @@
+{
+  "customers": [
+    {
+      "firstname": "John",
+      "name": "Williams",
+      "email": "john@williams.us",
+      "street": "320 John South St.",
+      "city": "New York",
+      "id": 1
+    }
+  ]
+}

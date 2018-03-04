@@ -1,0 +1,21 @@
+{
+  "name": "lwtest",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "server:dev": "nodemon server.js",
+    "server:prod": "node server.js",
+    "json-server": "( [ ! -f data.json ] && echo '{}' > data.json ); json-server --watch data.json"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^0.18.0",
+    "express": "^4.16.2",
+    "express-graphql": "^0.6.12",
+    "graphql": "^0.13.1",
+    "json-server": "^0.12.1",
+    "nodemon": "^1.17.1"
+  }
+}
