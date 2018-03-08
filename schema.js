@@ -5,8 +5,11 @@ const {
     GraphQLInt,
     GraphQLSchema,
     GraphQLList,
+    GraphQLBoolean,
     GraphQLNonNull
 } = require('graphql')
+
+const db = require('./ezpzdb').db()
 
 // Customer Type
 const CustomerType = new GraphQLObjectType({
@@ -30,15 +33,13 @@ const RootQuery = new GraphQLObjectType({
                 id: { type: GraphQLInt }
             },
             resolve (parentValue, args) {
-                return axios.get('http://localhost:3000/customers/' + args.id)
-                    .then(res => res.data)
+                return db.get('customers', args.id)
             }
         },
         customers: {
             type: new GraphQLList(CustomerType),
             resolve (parentValue, args) {
-                return axios.get('http://localhost:3000/customers')
-                    .then(res => res.data)
+                return db.getAll('customers')
             }
         }
     }
@@ -58,19 +59,16 @@ const mutation = new GraphQLObjectType({
                 city: { type: new GraphQLNonNull(GraphQLString) }
             },
             resolve (parentValue, args) {
-                return axios.post('http://localhost:3000/customers', args)
-                  .then(res => res.data)
+              return { id: db.insert('customers', args) }
             }
         },
         deleteCustomer: {
-            type: CustomerType,
+            type: GraphQLBoolean,
             args: {
                 id: { type: new GraphQLNonNull(GraphQLInt) }
             },
             resolve (parentValue, args) {
-                return axios.delete(
-                  `http://localhost:3000/customers/${args.id}`)
-                  .then(res => res.data);
+              return db.remove('customers', args.id)
             }
         },
         editCustomer: {
@@ -79,15 +77,35 @@ const mutation = new GraphQLObjectType({
                 id: { type: new GraphQLNonNull(GraphQLInt) },
                 firstname: { type: GraphQLString },
                 name: { type: GraphQLString },
+                email: { type: GraphQLString },
                 street: { type: GraphQLString },
                 city: { type: GraphQLString }
             },
             resolve (parentValue, args) {
-                return axios.patch(
-                  `http://localhost:3000/customers/${args.id}`, args)
-                  .then(res => res.data);
+              return db.update('customers', args)
             }
         },
+        benchmarkCustomer: {
+          type: GraphQLBoolean,
+          args: {
+            amount: { type: new GraphQLNonNull(GraphQLInt) }
+          },
+          resolve (parentValue, args) {
+            let amount = args.amount
+            console.log("Doing benchmark...")
+            for (let i = 0; i < amount; i++) {
+              console.log(`${i}`)
+              db.insert('customers', {
+                name: `Name ${i}`,
+                firstname: `Firstname ${i}`,
+                email: "example@mail.com",
+                street: `${i} South Street`,
+                city: `Los Angeles`
+              })
+            }
+            return true
+          }
+        }
     }
 })
 

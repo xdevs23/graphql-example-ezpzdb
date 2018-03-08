@@ -6,7 +6,9 @@
   "scripts": {
     "server:dev": "nodemon server.js",
     "server:prod": "node server.js",
-    "json-server": "( [ ! -f data.json ] && echo '{}' > data.json ); json-server --watch data.json"
+    "json-server": "( [ ! -f data.json ] && echo '{}' > data.json ); json-server --watch data.json",
+    "start-all": "yarn run json-server & yarn run server:dev",
+    "start-all:prod": "yarn run json-server & yarn run server:prod"
   },
   "author": "",
   "license": "ISC",

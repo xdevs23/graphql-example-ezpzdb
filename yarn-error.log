@@ -1,0 +1,60 @@
+Arguments: 
+  /usr/bin/node /home/simao/.yarn/bin/yarn.js run server:dev
+
+PATH: 
+  /home/simao/.yarn/bin:/home/simao/.config/yarn/global/node_modules/.bin:/home/simao/Android/android-sdk/platform-tools:/home/simao/Android/android-sdk/tools/bin:/home/simao/Android/selinux/policycoreutils/audit2allow:/usr/local/sbin:/usr/local/bin:/usr/bin:/opt/android-sdk/platform-tools:/opt/cuda/bin:/usr/lib/jvm/default/bin:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl
+
+Yarn version: 
+  1.5.1
+
+Node version: 
+  9.7.1
+
+Platform: 
+  linux x64
+
+npm manifest: 
+  {
+    "name": "lwtest",
+    "version": "1.0.0",
+    "description": "",
+    "main": "server.js",
+    "scripts": {
+      "server:dev": "nodemon server.js",
+      "server:prod": "node server.js",
+      "json-server": "( [ ! -f data.json ] && echo '{}' > data.json ); json-server --watch data.json",
+      "start-all": "yarn run json-server & yarn run server:dev",
+      "start-all:prod": "yarn run json-server & yarn run server:prod"
+    },
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+      "axios": "^0.18.0",
+      "express": "^4.16.2",
+      "express-graphql": "^0.6.12",
+      "graphql": "^0.13.1",
+      "json-server": "^0.12.1",
+      "nodemon": "^1.17.1"
+    }
+  }
+
+yarn manifest: 
+  No manifest
+
+Lockfile: 
+  No lockfile
+
+Trace: 
+  Error: Command failed.
+  Exit code: 1
+  Command: sh
+  Arguments: -c nodemon server.js
+  Directory: /home/simao/lwtest
+  Output:
+  
+      at ProcessTermError.MessageError (/home/simao/.yarn/lib/cli.js:186:110)
+      at new ProcessTermError (/home/simao/.yarn/lib/cli.js:226:113)
+      at ChildProcess.<anonymous> (/home/simao/.yarn/lib/cli.js:30281:17)
+      at ChildProcess.emit (events.js:127:13)
+      at maybeClose (internal/child_process.js:936:16)
+      at Process.ChildProcess._handle.onexit (internal/child_process.js:220:5)
