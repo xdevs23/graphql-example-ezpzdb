@@ -3,3 +3,4 @@ node_modules
 *.DS_Store
 __MACOSX
 *__MACOSX
+yarn-error.log
