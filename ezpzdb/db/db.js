@@ -3,6 +3,7 @@
 const mkdir = require('mkdir-p')
 const fs = require('fs')
 const os = require('os')
+const msgpack = require('msgpack')
 var util = null
 
 function throwAndLog(msg) {
@@ -111,8 +112,7 @@ class Database {
             // It's going to be filled completely anyway
             buf = Buffer.allocUnsafe(length);
           }
-          items.push(JSON.parse(buf.toString('utf8', 0,
-            fs.readSync(fd, buf, 0, length))))
+          items.push(msgpack.unpack(buf))
           lines++
         }
         log(`Table ${tableName} loaded, ${lines} items`)
@@ -194,7 +194,7 @@ class Database {
         let table = this.storage.tables[tableName]
         indexfile.append(`${table.lastId}`)
         for (let rowId in table.items) {
-          let data = JSON.stringify(table.items[rowId])
+          let data = msgpack.pack(table.items[rowId])
           file.append(data)
           indexfile.append('\n')
           indexfile.append(`${data.length}`)
@@ -202,7 +202,7 @@ class Database {
             if (os.freemem() < this.storage.leastfree) {
               reject(new Error(
                 `Less than ${this.storage.leastfreemib} MiB system memory ` +
-                `available: ${os.freemem() / 1024 / 1024} MiB.` +
+                `available: ${os.freemem() / 1024 / 1024} MiB. ` +
                 "You're on your own :/"))
               return
             }

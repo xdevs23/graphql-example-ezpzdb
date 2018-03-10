@@ -1216,11 +1216,17 @@ ms@2.0.0:
   version "2.0.0"
   resolved "https://registry.yarnpkg.com/ms/-/ms-2.0.0.tgz#5608aeadfc00be6c2901df5f9861788de0d597c8"
 
+msgpack@^1.0.2:
+  version "1.0.2"
+  resolved "https://registry.yarnpkg.com/msgpack/-/msgpack-1.0.2.tgz#923e2c5cffa65c8418e9b228d1124793969c429c"
+  dependencies:
+    nan "^2.0.9"
+
 n-readlines@^0.2.8:
   version "0.2.8"
   resolved "https://registry.yarnpkg.com/n-readlines/-/n-readlines-0.2.8.tgz#6022f0b1a034a32dc0bfcc0e8ca9fbd6877d341a"
 
-nan@^2.3.0:
+nan@^2.0.9, nan@^2.3.0:
   version "2.9.2"
   resolved "https://registry.yarnpkg.com/nan/-/nan-2.9.2.tgz#f564d75f5f8f36a6d9456cca7a6c4fe488ab7866"
 

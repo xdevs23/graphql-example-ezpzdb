@@ -4,3 +4,4 @@ node_modules
 __MACOSX
 *__MACOSX
 yarn-error.log
+datastorage/
