@@ -4,8 +4,8 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "server:dev": "nodemon server.js",
-    "server:prod": "node server.js",
+    "server:dev": "nodemon --expose-gc --max_old_space_size=$(awk '/MemFree/ { printf \"%d \\\n\", $2/1024-256 }' /proc/meminfo) server.js",
+    "server:prod": "node --expose-gc --max_old_space_size=$(awk '/MemFree/ { printf \"%d \\\n\", $2/1024-256 }' /proc/meminfo) server.js",
     "json-server": "( [ ! -f data.json ] && echo '{}' > data.json ); json-server --watch data.json",
     "start-all": "yarn run json-server & yarn run server:dev",
     "start-all:prod": "yarn run json-server & yarn run server:prod"
@@ -14,10 +14,15 @@
   "license": "ISC",
   "dependencies": {
     "axios": "^0.18.0",
+    "bson": "^2.0.2",
     "express": "^4.16.2",
     "express-graphql": "^0.6.12",
     "graphql": "^0.13.1",
     "json-server": "^0.12.1",
+    "n-readlines": "^0.2.8",
     "nodemon": "^1.17.1"
+  },
+  "devDependencies": {
+    "heapdump": "^0.3.9"
   }
 }

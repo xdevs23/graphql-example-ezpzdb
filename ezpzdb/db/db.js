@@ -2,6 +2,7 @@
 
 const mkdir = require('mkdir-p')
 const fs = require('fs')
+const os = require('os')
 var util = null
 
 function throwAndLog(msg) {
@@ -9,16 +10,14 @@ function throwAndLog(msg) {
   throw Error(msg)
 }
 
-function appendFile(file) {
-  log("Persisting data...")
-  let stream = fs.createWriteStream(file, { flags: 'a' })
+function appendFile(file, mode = 'a') {
+  let stream = fs.createWriteStream(file, { flags: mode })
   return {
     append (content) {
       stream.write(content)
     },
     async close () {
       stream.end()
-      log("...done")
     }
   }
 }
@@ -50,10 +49,9 @@ class Database {
 
       },
       dir,
-      exists: false
-    }
-    this.index = {
-      tables: {}
+      exists: false,
+      writes: 0,
+      lastPersistDataTimeout: null
     }
     this.paths = {
       tabledir (table) {
@@ -70,25 +68,60 @@ class Database {
   }
 
   initialize() {
-    log("Easy Peasy Lemon Squeezy Databasey")
-    log("Here to serve.")
-    log("")
-    log("Initializing...")
+    log('Easy Peasy Lemon Squeezy Databasey')
+    log('Here to serve.')
+    log('')
+    log('Initializing...')
     mkdir.sync(this.storage.dir)
+    // At least the percentage below of memory has to be available
+    // Has to be at least 64 MiB and no more than 1 GiB
+    let leastfree = Math.floor(os.totalmem() * 0.06)
+    leastfree = Math.max(64 * 1024 * 1024, leastfree)
+    leastfree = Math.min(1024 * 1024 * 1024, leastfree)
+    let leastfreemib = Math.floor(leastfree / 1024 / 1024)
+    log(`Watching your memory usage - I need ${leastfreemib} MiB available`)
+    this.storage.leastfree = leastfree
+    this.storage.leastfreemib = leastfreemib
     // This file is used to indicate that the
     // database has already been created and is ready to use
     this.paths.stamp = `${this.storage.dir}/.stamp`
     if (this.storage.exists = fs.existsSync(this.paths.stamp)) {
-      log(`Database exists, reading index into memory...`)
+      log('Database exists, reading database into memory...')
+      let readlines = require('n-readlines');
+      let startTime = Date.now()
       let tableNames = fs.readdirSync(this.paths.tabledir(''))
-      tableNames.forEach(tableName => {
-        this.index.tables[tableName] =
-          JSON.parse(fs.readFileSync(this.paths.indexfile(tableName)))
-        this.storage.tables[tableName] = {
-          lastId: this.index.tables[tableName].lastId,
-          items: []
+      for (let i = 0; i < tableNames.length; i++) {
+        let tableName = tableNames[i]
+        this.createTable(tableName)
+        let liner = new readlines(this.paths.indexfile(tableName));
+        let lastId = parseInt(liner.next())
+        let items = []
+        let fd = fs.openSync(this.paths.tablefile(tableName), 'r');
+        // Prevents unnecessary new buffer allocations up until that size.
+        // I think 1 KiB of buffer should be enough for average items
+        // and is OK to use since we might get a performance boost later.
+        // It will be GC-collected later, anyway.
+        let buf = new Buffer(1024)
+        let lines = 0
+        let length;
+        while (length = parseInt(liner.next().toString())) {
+          if (buf.length > length) {
+            buf.writeInt8(0, length, true)
+          } else if (buf.length < length) {
+            // It's going to be filled completely anyway
+            buf = Buffer.allocUnsafe(length);
+          }
+          items.push(JSON.parse(buf.toString('utf8', 0,
+            fs.readSync(fd, buf, 0, length))))
+          lines++
         }
-      })
+        log(`Table ${tableName} loaded, ${lines} items`)
+        fs.closeSync(fd);
+        this.storage.tables[tableName].lastId = lastId
+        this.storage.tables[tableName].items = items
+      }
+      log(`Tables loaded: ${Object.keys(this.storage.tables).length}, ` +
+            (Date.now() - startTime) + ' ms')
     } else {
       log(`New database, will be created once data is persisted`)
     }
@@ -101,6 +134,48 @@ class Database {
     }
   }
 
+  /**
+   * Finds the best time to persist data and schedules it accordingly
+   */
+  asyncPersistData() {
+    /*
+     * Data is persisted when:
+     *  - more than or exactly 100 writes have occured AND at
+     *    least (writes / 100) minutes have passed since the last write
+     *  - at least 1000 writes occured AND at least
+     *    one second passed since the last write
+     *  - Less than 100 writes have occured AND at least 2 minutes passed
+     *    since the last write
+     *
+     * This is to ensure performance when writing batches while maintaining
+     * reliable data persistance.
+     *
+     * 1 write is inserting/updating/removing once
+     */
+    let dateNow = Date.now()
+    let normalRunDue = this.storage.writes >= 100 &&
+         this.storage.lastWrite + 1000 * 60 * this.storage.writes / 100 <=
+          dateNow
+    let longRunDue = this.storage.writes >= 1000 &&
+                      this.storage.lastWrite + 1000 <= dateNow
+    let shortRunDue = this.storage.writes < 100 &&
+       this.storage.lastWrite + 1000 * 60 * 2 <= dateNow
+    if (normalRunDue || longRunDue || shortRunDue) {
+      (async () => {
+        this.persistData().then(() => {}, e => throwAndLog(e))
+                          .catch(e => throwAndLog(e))
+      })()
+    } else {
+      if (this.lastPersistDataTimeout != null) {
+        clearTimeout(this.lastPersistDataTimeout)
+      }
+      this.lastPersistDataTimeout = setTimeout(() => {
+        this.lastPersistDataTimeout = null
+        this.asyncPersistData()
+      }, (this.storage.writes > 1000 ? 1 : 60) * 1000)
+    }
+  }
+
   persistData () {
     return new Promise((resolve, reject) => {
       if (!this.storage.exists) {
@@ -110,54 +185,53 @@ class Database {
         })
         this.storage.exists = true
       }
+      global.gc()
+      log("Persisting data...")
       for (let tableName in this.storage.tables) {
-        let table = this.storage.tables[tableName]
         mkdir.sync(this.paths.tabledir(tableName))
-        if (!this.index.tables[tableName]) {
-          this.index.tables[tableName] = { index: {} }
-        }
-        this.index.tables[tableName].lastId = table.lastId
-        let offset = 0
-        let file = appendFile(this.paths.tablefile(tableName))
-        for (let entryIx in table.items) {
-          let entry = table.items[entryIx]
-          // Skip already existing entries
-          if (this.index.tables[tableName].index[`${entry.id}`]) {
-            continue
-          }
-          // Start off with the last offset + its entry's length
-          else if (Object.keys(this.index.tables[tableName].index).length > 0) {
-            let lastItem = this.index.tables[tableName].index[`${table.beforeLastId}`]
-            offset = lastItem.o + lastItem.l
-          }
-          // Create the string to save the data
-          let jsonText = JSON.stringify(entry)
-          // Create an index entry so that we can address this quickly
-          this.index.tables[tableName].index[`${entry.id}`] = {
-            o: offset,
-            l: jsonText.length
-          }
-          // Append the entry to the file
-          file.append(jsonText)
-          // And now grow the offset to continue
-          offset += jsonText.length
-        }
-        file.close()
-        fs.writeFile(this.paths.indexfile(tableName),
-          JSON.stringify(this.index.tables[tableName]), err => {
-            if (err) {
-              reject(err)
-            } else {
-              // Now that the data is persisted, remove it from memory
-              table.items = []
+        let file = appendFile(this.paths.tablefile(tableName), 'w')
+        let indexfile = appendFile(this.paths.indexfile(tableName), 'w')
+        let table = this.storage.tables[tableName]
+        indexfile.append(`${table.lastId}`)
+        for (let rowId in table.items) {
+          let data = JSON.stringify(table.items[rowId])
+          file.append(data)
+          indexfile.append('\n')
+          indexfile.append(`${data.length}`)
+          if (rowId % 100000 === 0) {
+            if (os.freemem() < this.storage.leastfree) {
+              reject(new Error(
+                `Less than ${this.storage.leastfreemib} MiB system memory ` +
+                `available: ${os.freemem() / 1024 / 1024} MiB.` +
+                "You're on your own :/"))
+              return
             }
           }
-        )
+        }
+        file.close()
+        indexfile.close()
+        this.storage.writes = 0
+        global.gc()
       }
+      log("...done")
     })
   }
 
   insert (table, data) {
+    if ((this.storage.writes + 1) % 250000 === 0) {
+      if (os.freemem() < this.storage.leastfree) {
+        if (this.lastPersistDataTimeout != null) {
+          clearTimeout(this.lastPersistDataTimeout)
+        }
+        let error =
+          `Less than ${this.storage.leastfreemib} MiB system memory ` +
+          `available: ${os.freemem() / 1024 / 1024} MiB. ` +
+          "You're on your own :/"
+        console.log(error)
+        throw new Error(error)
+        return null
+      } else if (this.storage.writes % 2000000 === 0) global.gc()
+    }
     if (!this.storage.tables[table]) {
       this.createTable(table)
     }
@@ -165,7 +239,9 @@ class Database {
     tbl.beforeLastId = tbl.lastId
     data.id = ++tbl.lastId
     tbl.items.push(data)
-    this.persistData().then(() => {}, e => throwAndLog(e))
+    this.storage.lastWrite = Date.now()
+    this.storage.writes++
+    this.asyncPersistData()
     return tbl.lastId
   }
 
@@ -173,21 +249,14 @@ class Database {
     if (data.id === undefined || data.id === 0) {
       throw Error('id must exist and be at least 1')
     }
-    let indexItem = this.index.tables[table].index[`${data.id}`]
-    if (!indexItem) {
-      return {}
-    }
-    let filename = this.paths.tablefile(table)
-    let newData = JSON.stringify(data)
-    let lastItem = this.index.tables[table]
-      .index[`${this.storage.tables[table].lastId}`]
-    indexItem.o = lastItem.o + lastItem.l
-    indexItem.l = newData.length
-    let file = appendFile(filename)
-    file.append(newData)
-    file.close()
-    fs.writeFileSync(this.paths.indexfile(table),
-      JSON.stringify(this.index.tables[table]))
+    this.storage.tables[table].items[
+      this.storage.tables[table].items.findIndex((item) => {
+        return item.id === data.id
+      })
+    ] = data
+    this.storage.lastWrite = Date.now()
+    this.storage.writes++
+    this.asyncPersistData()
     return this.get(table, data.id)
   }
 
@@ -195,40 +264,49 @@ class Database {
     if (id === undefined || id === 0) {
       throw Error('id must exist and be at least 1')
     }
-    let tableIndex = this.index.tables[table]
-    if (!tableIndex || !tableIndex.index[`${id}`]) {
-      return false
+    delete this.storage.tables[table].items[
+      this.storage.tables[table].findIndex((item) => {
+        return item.id === id
+      })
+    ]
+    if (id === this.storage.tables[table].lastId) {
+      this.storage.tables[table].lastId--
     }
-    delete tableIndex.index[`${id}`]
-    this.persistData()
+    this.storage.lastWrite = Date.now()
+    this.storage.writes++
+    this.asyncPersistData()
     return true
+  }
+
+  /**
+   * table: Table to truncate
+   * start: Anything bigger than this will be gone
+   */
+  truncate (table, start = 0) {
+    let index = this.storage.tables[table].items.findIndex((item) => {
+      return item.id > start
+    })
+    let length = this.storage.tables[table].items.length =
+      index != -1 ? index : 0
+
+    this.storage.lastWrite = Date.now()
+    this.storage.writes++
+    this.storage.tables[table].lastId = start
+    this.asyncPersistData()
+    return length
   }
 
   get (table, id) {
     if (id === undefined || id === 0) {
       throw Error('id must exist and be at least 1')
     }
-    let indexEntry = this.index.tables[table].index[`${id}`]
-    if (!indexEntry) {
-      return {}
-    }
-    return JSON.parse(
-      readFilePartialSync(this.paths.tablefile(table),
-      indexEntry.o, indexEntry.l))
+    return this.storage.tables[table].items.find((item) => {
+      return item.id === id
+    })
   }
 
   getAll (table) {
-    let result = []
-    let tableIndex = this.index.tables[table].index
-    var fd = fs.openSync(this.paths.tablefile(table), 'r');
-    for (let tableIndexIx in tableIndex) {
-      let entry = tableIndex[tableIndexIx]
-      var buf = new Buffer(entry.l);
-      fs.readSync(fd, buf, 0, entry.l, entry.o);
-      result.push(JSON.parse(buf))
-    }
-    fs.close(fd);
-    return result
+    return this.storage.tables[table].items
   }
 }
 

@@ -85,6 +85,12 @@ const mutation = new GraphQLObjectType({
               return db.update('customers', args)
             }
         },
+        deleteAllCustomers: {
+          type: GraphQLInt,
+          resolve (parentValue, args) {
+            return db.truncate('customers')
+          }
+        },
         benchmarkCustomer: {
           type: GraphQLBoolean,
           args: {
@@ -93,7 +99,8 @@ const mutation = new GraphQLObjectType({
           resolve (parentValue, args) {
             let amount = args.amount
             console.log("Doing benchmark...")
-            for (let i = 0; i < amount; i++) {
+            global.gc()
+            for (let i = 1; i <= amount; i++) {
               console.log(`${i}`)
               db.insert('customers', {
                 name: `Name ${i}`,
@@ -102,6 +109,9 @@ const mutation = new GraphQLObjectType({
                 street: `${i} South Street`,
                 city: `Los Angeles`
               })
+              if (i % 1000000 === 0) {
+                global.gc()
+              }
             }
             return true
           }
