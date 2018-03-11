@@ -52,7 +52,8 @@ class Database {
       dir,
       exists: false,
       writes: 0,
-      lastPersistDataTimeout: null
+      lastPersistDataTimeout: null,
+      worthPersistingNow: false
     }
     this.paths = {
       tabledir (table) {
@@ -153,18 +154,19 @@ class Database {
      * 1 write is inserting/updating/removing once
      */
     let dateNow = Date.now()
-    let normalRunDue = this.storage.writes >= 100 &&
-         this.storage.lastWrite + 1000 * 60 * this.storage.writes / 100 <=
-          dateNow
-    let longRunDue = this.storage.writes >= 1000 &&
-                      this.storage.lastWrite + 1000 <= dateNow
-    let shortRunDue = this.storage.writes < 100 &&
-       this.storage.lastWrite + 1000 * 60 * 2 <= dateNow
-    if (normalRunDue || longRunDue || shortRunDue) {
+    let writes = this.storage.writes
+    let lastWrite = this.storage.lastWrite
+    let normalRunDue =
+      writes >= 100 && lastWrite + 1000 * 60 * writes / 100 <= dateNow
+    let longRunDue = writes >= 1000 && lastWrite + 1000 <= dateNow
+    let shortRunDue = writes < 100 && lastWrite + 1000 * 60 * 2 <= dateNow
+    if (normalRunDue || longRunDue || shortRunDue ||
+        this.storage.worthPersistingNow) {
       (async () => {
         this.persistData().then(() => {}, e => throwAndLog(e))
                           .catch(e => throwAndLog(e))
       })()
+      this.storage.worthPersistingNow = false
     } else {
       if (this.lastPersistDataTimeout != null) {
         clearTimeout(this.lastPersistDataTimeout)
@@ -172,7 +174,7 @@ class Database {
       this.lastPersistDataTimeout = setTimeout(() => {
         this.lastPersistDataTimeout = null
         this.asyncPersistData()
-      }, (this.storage.writes > 1000 ? 1 : 60) * 1000)
+      }, (writes > 1000 ? 1 : 60) * 1000)
     }
   }
 
@@ -193,12 +195,12 @@ class Database {
         let indexfile = appendFile(this.paths.indexfile(tableName), 'w')
         let table = this.storage.tables[tableName]
         indexfile.append(`${table.lastId}`)
-        for (let rowId in table.items) {
-          let data = msgpack.pack(table.items[rowId])
+        for (let i = 0; i < table.items.length; i++) {
+          let data = msgpack.pack(table.items[i])
           file.append(data)
           indexfile.append('\n')
           indexfile.append(`${data.length}`)
-          if (rowId % 100000 === 0) {
+          if (i % 100000 === 0) {
             if (os.freemem() < this.storage.leastfree) {
               reject(new Error(
                 `Less than ${this.storage.leastfreemib} MiB system memory ` +
@@ -286,14 +288,14 @@ class Database {
     let index = this.storage.tables[table].items.findIndex((item) => {
       return item.id > start
     })
-    let length = this.storage.tables[table].items.length =
-      index != -1 ? index : 0
+    this.storage.tables[table].items.length = index !== -1 ? index : 0
 
     this.storage.lastWrite = Date.now()
     this.storage.writes++
     this.storage.tables[table].lastId = start
+    this.storage.worthPersistingNow = true
     this.asyncPersistData()
-    return length
+    return index
   }
 
   get (table, id) {
