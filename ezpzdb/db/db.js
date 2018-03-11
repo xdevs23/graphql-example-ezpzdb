@@ -4,6 +4,7 @@ const mkdir = require('mkdir-p')
 const fs = require('fs')
 const os = require('os')
 const msgpack = require('msgpack')
+const readlines = require('n-readlines')
 var util = null
 
 function throwAndLog(msg) {
@@ -88,41 +89,20 @@ class Database {
     // database has already been created and is ready to use
     this.paths.stamp = `${this.storage.dir}/.stamp`
     if (this.storage.exists = fs.existsSync(this.paths.stamp)) {
-      log('Database exists, reading database into memory...')
-      let readlines = require('n-readlines');
-      let startTime = Date.now()
+      log('Database exists, reading information...')
       let tableNames = fs.readdirSync(this.paths.tabledir(''))
       for (let i = 0; i < tableNames.length; i++) {
         let tableName = tableNames[i]
         this.createTable(tableName)
         let liner = new readlines(this.paths.indexfile(tableName));
-        let lastId = parseInt(liner.next())
-        let items = []
-        let fd = fs.openSync(this.paths.tablefile(tableName), 'r');
-        // Prevents unnecessary new buffer allocations up until that size.
-        // I think 1 KiB of buffer should be enough for average items
-        // and is OK to use since we might get a performance boost later.
-        // It will be GC-collected later, anyway.
-        let buf = new Buffer(1024)
-        let lines = 0
-        let length;
-        while (length = parseInt(liner.next().toString())) {
-          if (buf.length > length) {
-            buf.writeInt8(0, length, true)
-          } else if (buf.length < length) {
-            // It's going to be filled completely anyway
-            buf = Buffer.allocUnsafe(length);
-          }
-          items.push(msgpack.unpack(buf))
-          lines++
-        }
-        log(`Table ${tableName} loaded, ${lines} items`)
-        fs.closeSync(fd);
+        let next = liner.next()
+        let lastId = 0
+        if (next) lastId = parseInt(next)
+        // Asynchronously get to the end of the file
+        ;(async () => { while (liner.next()); })()
         this.storage.tables[tableName].lastId = lastId
-        this.storage.tables[tableName].items = items
+        log(`Table ${tableName} initialized, last id: ${lastId}`)
       }
-      log(`Tables loaded: ${Object.keys(this.storage.tables).length}, ` +
-            (Date.now() - startTime) + ' ms')
     } else {
       log(`New database, will be created once data is persisted`)
     }
@@ -130,8 +110,19 @@ class Database {
 
   createTable (table) {
     this.storage.tables[table] = {
+      // Last inserted ID. Can only increment, except if truncated
       lastId: 0,
-      items: []
+      items: [],
+      // Items to insert when persisting, full item
+      inserts: [],
+      // Items to update when persisting, full item
+      updates: [],
+      // Items to remove when persisting, just id
+      removals: [],
+      // >= 0 means truncate to that
+      truncate: -1,
+      // Cache
+      cache: []
     }
   }
 
@@ -191,27 +182,102 @@ class Database {
       log("Persisting data...")
       for (let tableName in this.storage.tables) {
         mkdir.sync(this.paths.tabledir(tableName))
-        let file = appendFile(this.paths.tablefile(tableName), 'w')
-        let indexfile = appendFile(this.paths.indexfile(tableName), 'w')
-        let table = this.storage.tables[tableName]
-        indexfile.append(`${table.lastId}`)
-        for (let i = 0; i < table.items.length; i++) {
-          let data = msgpack.pack(table.items[i])
-          file.append(data)
-          indexfile.append('\n')
-          indexfile.append(`${data.length}`)
-          if (i % 100000 === 0) {
-            if (os.freemem() < this.storage.leastfree) {
-              reject(new Error(
-                `Less than ${this.storage.leastfreemib} MiB system memory ` +
-                `available: ${os.freemem() / 1024 / 1024} MiB. ` +
-                "You're on your own :/"))
-              return
+        if (table.truncate >= 0) {
+          if (table.truncate === 0) {
+            // Quick-truncate since there are no items left
+            fs.truncateSync(this.paths.indexfile(tableName), 0)
+            fs.writeFileSync(this.paths.indexfile(tableName), '0')
+            fs.truncateSync(this.paths.tablefile(tableName), 0)
+            // And without items there are no removals
+            this.storage.tables[tableName].removals.length = 0
+          } else {
+            // This is the position the table file is going to be truncated at
+            let tableTruncPos = 0
+            // We need to go through the index to find the correct
+            // truncate position as well as the position for
+            // the table file.
+            let liner = new readlines(this.paths.indexfile(tableName))
+            // This is the position the index file is going to be truncated at
+            let truncPos = liner.next().length
+            let next
+            while (next = liner.next()) {
+              let split = parseInt(next.toString().split(',')
+              if (split[1]) <= table.truncate) {
+                truncPos += next.length
+                tableTruncPos += parseInt(split[0])
+              } else {
+                // Finish it up
+                ;(async () => { while (liner.next()); })()
+                break
+              }
             }
+            fs.truncate(this.paths.indexfile(tableName), truncPos)
+            fs.truncate(this.paths.tablefile(tableName), tableTruncPos)
           }
         }
-        file.close()
-        indexfile.close()
+        table.removals.sort((a, b) => {
+          if (a.id > b.id) return 1
+          if (a.id < b.id) return -1
+          return 0
+        })
+        for (let i = 0; i < table.removals.length; i++) {
+          let removal = table.removals[i]
+          let fd = fs.openSync(this.paths.indexfile(tableName), 'r')
+          let tfd = fs.openSync(this.paths.tablefile(tableName), 'r')
+          let nifd = fs.openSync(this.paths.indexfile(tableName) + '.new', 'w')
+          let ntfd = fs.openSync(this.paths.tablefile(tableName) + '.new', 'w')
+          let nifile = appendFile(nifd)
+          let ntfile = appendFile(ntfd)
+          let liner = new readlines(fd)
+          let next
+          let pos = 0
+          while (next = liner.next()) {
+            let split = next.toString().split(',')
+            split = [parseInt(split[0]), parseInt(split[1])]
+            if (!(split[1] === removal && removal <= table.lastId)) {
+              nifile.append('\n')
+              nifile.append(next)
+              let buf = new Buffer(split[0])
+              ntfile.append(fs.readSync(fd, buf, 0, split[0], pos))
+            }
+            pos += split[0]
+          }
+          fs.closeSync(fd)
+          fs.closeSync(tfd)
+          nifile.close()
+          ntfile.close()
+        }
+        for (let i = 0; i < table.updates.length; i++) {
+          let update = table.updates[i]
+          let fd = fs.openSync(this.paths.indexfile(tableName), 'r')
+          let tfd = fs.openSync(this.paths.tablefile(tableName), 'r')
+          let nifd = fs.openSync(this.paths.indexfile(tableName) + '.new', 'w')
+          let ntfd = fs.openSync(this.paths.tablefile(tableName) + '.new', 'w')
+          let nifile = appendFile(nifd)
+          let ntfile = appendFile(ntfd)
+          let liner = new readlines(fd)
+          let next
+          let pos = 0
+          while (next = liner.next()) {
+            let split = next.toString().split(',')
+            split = [parseInt(split[0]), parseInt(split[1])]
+            nifile.append('\n')
+            if (split[1] !== update.id) {
+              let buf = new Buffer(split[0])
+              ntfile.append(fs.readSync(fd, buf, 0, split[0], pos))
+              nifile.append(next)
+            } else {
+              let data
+              ntfile.append(data = msgpack.pack(update))
+              nifile.append(`${data.length},${update.id}`)
+            }
+            pos += split[0]
+          }
+          fs.closeSync(fd)
+          fs.closeSync(tfd)
+          nifile.close()
+          ntfile.close()
+        }
         this.storage.writes = 0
         global.gc()
       }
@@ -240,7 +306,7 @@ class Database {
     let tbl = this.storage.tables[table]
     tbl.beforeLastId = tbl.lastId
     data.id = ++tbl.lastId
-    tbl.items.push(data)
+    tbl.inserts.push(data)
     this.storage.lastWrite = Date.now()
     this.storage.writes++
     this.asyncPersistData()
@@ -251,11 +317,15 @@ class Database {
     if (data.id === undefined || data.id === 0) {
       throw Error('id must exist and be at least 1')
     }
-    this.storage.tables[table].items[
-      this.storage.tables[table].items.findIndex((item) => {
-        return item.id === data.id
-      })
-    ] = data
+    let insertIndex = this.storage.tables[table].inserts.findIndex((item) => {
+      return item.id === data.id
+    })
+    if (insertIndex !== -1) {
+      this.storage.tables[table].inserts[insertIndex] = data
+    } else {
+      this.storage.tables[table].updates.push(data)
+    }
+
     this.storage.lastWrite = Date.now()
     this.storage.writes++
     this.asyncPersistData()
@@ -266,13 +336,13 @@ class Database {
     if (id === undefined || id === 0) {
       throw Error('id must exist and be at least 1')
     }
-    delete this.storage.tables[table].items[
-      this.storage.tables[table].findIndex((item) => {
-        return item.id === id
-      })
-    ]
-    if (id === this.storage.tables[table].lastId) {
-      this.storage.tables[table].lastId--
+    let insertIndex = this.storage.tables[table].inserts.findIndex((item) => {
+      return item.id === id
+    })
+    if (insertIndex !== -1) {
+      this.storage.tables[table].inserts.splice(insertIndex, 1)
+    } else {
+      this.storage.tables[table].removals.push(id)
     }
     this.storage.lastWrite = Date.now()
     this.storage.writes++
@@ -288,12 +358,12 @@ class Database {
     let index = this.storage.tables[table].items.findIndex((item) => {
       return item.id > start
     })
-    this.storage.tables[table].items.length = index !== -1 ? index : 0
 
     this.storage.lastWrite = Date.now()
     this.storage.writes++
     this.storage.tables[table].lastId = start
     this.storage.worthPersistingNow = true
+    this.storage.tables[table].truncate = start
     this.asyncPersistData()
     return index
   }
@@ -302,13 +372,75 @@ class Database {
     if (id === undefined || id === 0) {
       throw Error('id must exist and be at least 1')
     }
-    return this.storage.tables[table].items.find((item) => {
+    let item = this.storage.tables[table].updates.find((item) => {
       return item.id === id
     })
+    if (!item) {
+      item = this.storage.tables[table].inserts.find((item) => {
+        return item.id === id
+      })
+    }
+    if (!item) {
+      if (this.storage.tables[table].removals.find((item) => {
+        return item.id === id
+      })) return null
+      item = this.storage.tables[table].cache.find((item) => {
+        return item.id === id
+      })
+      if (!item) {
+        let tableName = table
+        let liner = new readlines(this.paths.indexfile(tableName))
+        liner.next()
+        let fd = fs.openSync(this.paths.tablefile(tableName), 'r')
+        // Prevents unnecessary new buffer allocations up until that size.
+        // I think 1 KiB of buffer should be enough for average items
+        // and is OK to use since we might get a performance boost later.
+        // It will be GC-collected later, anyway.
+        let buf = new Buffer(1024)
+        let length
+        while (length = parseInt(liner.next().toString())) {
+          if (buf.length > length) {
+            buf.writeInt8(0, length, true)
+          } else if (buf.length < length) {
+            // It's going to be filled completely anyway
+            buf = Buffer.allocUnsafe(length);
+          }
+          item = msgpack.unpack(buf)
+          if (item.id === id) {
+            break
+          } else item = null
+        }
+        fs.closeSync(fd)
+      }
+      return item
+    }
   }
 
-  getAll (table) {
-    return this.storage.tables[table].items
+  getAll (table, until = 0) {
+    let items = []
+    let tableName = table
+    let liner = new readlines(this.paths.indexfile(tableName))
+    liner.next()
+    let fd = fs.openSync(this.paths.tablefile(tableName), 'r')
+    // Prevents unnecessary new buffer allocations up until that size.
+    // I think 1 KiB of buffer should be enough for average items
+    // and is OK to use since we might get a performance boost later.
+    // It will be GC-collected later, anyway.
+    let buf = new Buffer(1024)
+    let length
+    while (length = parseInt(liner.next().toString())) {
+      if (buf.length > length) {
+        buf.writeInt8(0, length, true)
+      } else if (buf.length < length) {
+        // It's going to be filled completely anyway
+        buf = Buffer.allocUnsafe(length);
+      }
+      let item
+      items.push(item = msgpack.unpack(buf))
+      if (item.id === until) break
+    }
+    fs.closeSync(fd)
+    return items
   }
 }
 

