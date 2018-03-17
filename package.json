@@ -1,0 +1,20 @@
+{
+  "name": "graphql-example-ezpzdb",
+  "version": "1.0.0",
+  "description": "GraphQL Example with ezpzdb",
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+    "server:dev": "nodemon --expose-gc --max_old_space_size=$(awk '/MemFree/ { printf \"%d \\\n\", $2/1024-256 }' /proc/meminfo) server.js",
+    "server:prod": "node --expose-gc --max_old_space_size=$(awk '/MemFree/ { printf \"%d \\\n\", $2/1024-256 }' /proc/meminfo) server.js"
+  },
+  "author": "Simao Gomes Viana",
+  "dependencies": {
+    "express": "^4.16.2",
+    "express-graphql": "^0.6.12",
+    "graphql": "^0.13.1"
+  },
+  "devDependencies": {
+    "nodemon": "^1.17.2"
+  }
+}
