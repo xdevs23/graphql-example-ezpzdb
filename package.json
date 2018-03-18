@@ -5,8 +5,8 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
-    "server:dev": "nodemon --expose-gc --max_old_space_size=$(awk '/MemFree/ { printf \"%d \\\n\", $2/1024-256 }' /proc/meminfo) server.js",
-    "server:prod": "node --expose-gc --max_old_space_size=$(awk '/MemFree/ { printf \"%d \\\n\", $2/1024-256 }' /proc/meminfo) server.js"
+    "server:dev": "nodemon --expose-gc --max_old_space_size=$(awk '/MemAvailable/ { printf \"%d \\\n\", $2/1024-256 }' /proc/meminfo) server.js",
+    "server:prod": "node --expose-gc --max_old_space_size=$(awk '/MemAvailable/ { printf \"%d \\\n\", $2/1024-256 }' /proc/meminfo) server.js"
   },
   "author": "Simao Gomes Viana",
   "dependencies": {
